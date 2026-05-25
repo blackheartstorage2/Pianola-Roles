@@ -1,0 +1,229 @@
+cat > ~/pianola/dist/pianola-player.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pianola Player - Full Range with Octave Shift</title>
+    <script src="https://cdn.jsdelivr.net/npm/midi.js@0.3.0/build/midi.js"></script>
+    <style>
+        body { font-family: Arial; text-align: center; padding: 20px; background: #222; color: white; }
+        .piano { margin: 20px auto; background: #2a2a2a; padding: 20px; border-radius: 10px; display: inline-block; overflow-x: auto; }
+        .key { display: inline-block; width: 60px; height: 200px; background: white; border: 1px solid #000; margin: 2px; cursor: pointer; color: black; font-weight: bold; line-height: 350px; transition: 0.05s linear; user-select: none; }
+        .key.black { background: #333; color: white; height: 120px; line-height: 220px; width: 40px; margin-left: -20px; margin-right: -20px; position: relative; z-index: 2; }
+        .key.playing, .key:active { background: #ff6600 !important; transform: scale(0.96); }
+        .key.black.playing, .key.black:active { background: #ff4400 !important; }
+        .controls { margin: 20px; }
+        .midi-controls { margin: 20px; padding: 15px; background: #2a2a2a; border-radius: 10px; display: inline-block; }
+        button, input { margin: 5px; padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        .octave-controls { margin: 10px; padding: 10px; background: #1a1a1a; border-radius: 8px; display: inline-block; }
+        .octave-controls button { background: #444; color: white; border: none; font-size: 20px; padding: 10px 25px; }
+        .status { margin: 20px; padding: 10px; background: #333; border-radius: 5px; font-family: monospace; }
+        .current-octave { font-size: 18px; margin: 0 15px; display: inline-block; background: #000; padding: 8px 16px; border-radius: 20px; }
+    </style>
+</head>
+<body>
+    <h1>🎹 Pianola Player - Full Range with Octave Shift</h1>
+    
+    <div class="midi-controls">
+        <h3>Load MIDI File</h3>
+        <input type="file" id="midi-file" accept=".mid,.midi">
+        <div>
+            <button onclick="playMidi()">▶ Play (keys light up)</button>
+            <button onclick="stopMidi()">⏹ Stop</button>
+            <button onclick="pauseMidi()">⏸ Pause</button>
+            <button onclick="resumeMidi()">▶ Resume</button>
+            <label>Speed: <input type="range" id="speed" min="0.5" max="2" step="0.1" value="1" onchange="setSpeed(this.value)"></label>
+        </div>
+    </div>
+    
+    <div class="octave-controls">
+        <button onclick="shiftOctave(-1)">⬇️ Octave Down</button>
+        <span class="current-octave" id="octave-display">Octave: 4</span>
+        <button onclick="shiftOctave(1)">⬆️ Octave Up</button>
+    </div>
+    
+    <div class="piano" id="piano"></div>
+    <div class="status" id="status">🎵 Ready! Use octave buttons to access full range. Load a MIDI file to see keys light up.</div>
+
+    <script>
+        let audioContext = null;
+        let currentSong = null;
+        let keyElements = {};
+        let currentOctave = 4;  // Start at octave 4 (middle C)
+        
+        // Base notes within one octave (C to B)
+        const octaveNotes = [
+            { name: 'C',  black: false, midiOffset: 0 },
+            { name: 'C#', black: true,  midiOffset: 1 },
+            { name: 'D',  black: false, midiOffset: 2 },
+            { name: 'D#', black: true,  midiOffset: 3 },
+            { name: 'E',  black: false, midiOffset: 4 },
+            { name: 'F',  black: false, midiOffset: 5 },
+            { name: 'F#', black: true,  midiOffset: 6 },
+            { name: 'G',  black: false, midiOffset: 7 },
+            { name: 'G#', black: true,  midiOffset: 8 },
+            { name: 'A',  black: false, midiOffset: 9 },
+            { name: 'A#', black: true,  midiOffset: 10 },
+            { name: 'B',  black: false, midiOffset: 11 }
+        ];
+        
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                audioContext.resume();
+            }
+            return audioContext;
+        }
+        
+        function getMidiNote(baseOffset, octave) {
+            // midiNote = 12 * octave + offset
+            // Octave 4: C4=60, so offset 0 = 60
+            // Formula: 12 * (octave) + offset
+            return 12 * octave + baseOffset;
+        }
+        
+        function getFrequency(midiNote) {
+            return 440 * Math.pow(2, (midiNote - 69) / 12);
+        }
+        
+        function createPiano() {
+            const container = document.getElementById('piano');
+            container.innerHTML = '';
+            keyElements = {};
+            
+            octaveNotes.forEach(note => {
+                const midiNumber = getMidiNote(note.midiOffset, currentOctave);
+                const freq = getFrequency(midiNumber);
+                const keyDiv = document.createElement('div');
+                keyDiv.className = `key ${note.black ? 'black' : ''}`;
+                keyDiv.textContent = `${note.name}${currentOctave}`;
+                keyDiv.id = `key-${midiNumber}`;
+                
+                keyDiv.onmousedown = (e) => {
+                    e.preventDefault();
+                    playNoteFromMidi(midiNumber);
+                    keyDiv.classList.add('playing');
+                    setTimeout(() => keyDiv.classList.remove('playing'), 200);
+                };
+                
+                container.appendChild(keyDiv);
+                keyElements[midiNumber] = keyDiv;
+            });
+        }
+        
+        function playNoteFromMidi(midiNumber, duration = 0.8) {
+            const ctx = initAudio();
+            const freq = getFrequency(midiNumber);
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = freq;
+            osc.type = 'sine';
+            gain.gain.setValueAtTime(0.2, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+            osc.start();
+            osc.stop(ctx.currentTime + duration);
+        }
+        
+        function shiftOctave(delta) {
+            // Limit octave range from 1 to 8 (MIDI notes 12 to 107)
+            const newOctave = currentOctave + delta;
+            if (newOctave >= 1 && newOctave <= 8) {
+                currentOctave = newOctave;
+                document.getElementById('octave-display').textContent = `Octave: ${currentOctave}`;
+                createPiano();
+                document.getElementById('status').innerHTML = `⬆️ Shifted to octave ${currentOctave}. Keys now play ${currentOctave} range.`;
+            } else {
+                document.getElementById('status').innerHTML = `⚠️ Already at ${currentOctave === 1 ? 'lowest' : 'highest'} octave.`;
+            }
+        }
+        
+        function loadMidiFile(file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const midiData = new Uint8Array(e.target.result);
+                MIDI.Player.loadArray(midiData, function() {
+                    currentSong = MIDI.Player;
+                    document.getElementById('status').innerHTML = '✅ MIDI loaded! Click Play to see keys light up.';
+                });
+            };
+            reader.readAsArrayBuffer(file);
+        }
+        
+        function playMidi() {
+            if (currentSong) {
+                MIDI.Player.stop();
+                // Clear any stuck highlighted keys
+                Object.values(keyElements).forEach(key => key.classList.remove('playing'));
+                // Register callbacks for visual feedback
+                MIDI.Player.removeListener();
+                MIDI.Player.addListener(function(data) {
+                    if (data.command === 'noteOn' && data.note) {
+                        const keyDiv = keyElements[data.note];
+                        if (keyDiv) keyDiv.classList.add('playing');
+                    }
+                    if (data.command === 'noteOff' && data.note) {
+                        const keyDiv = keyElements[data.note];
+                        if (keyDiv) keyDiv.classList.remove('playing');
+                    }
+                });
+                MIDI.Player.start();
+                document.getElementById('status').innerHTML = '🎵 Playing MIDI - WATCH THE KEYS LIGHT UP!';
+            } else {
+                document.getElementById('status').innerHTML = '⚠️ Please load a MIDI file first.';
+            }
+        }
+        
+        function stopMidi() {
+            if (currentSong) {
+                MIDI.Player.stop();
+                Object.values(keyElements).forEach(key => key.classList.remove('playing'));
+                document.getElementById('status').innerHTML = '⏹ Stopped.';
+            }
+        }
+        
+        function pauseMidi() {
+            if (currentSong) {
+                MIDI.Player.pause();
+                document.getElementById('status').innerHTML = '⏸ Paused.';
+            }
+        }
+        
+        function resumeMidi() {
+            if (currentSong) {
+                MIDI.Player.resume();
+                document.getElementById('status').innerHTML = '▶ Resumed - watching keys!';
+            }
+        }
+        
+        function setSpeed(val) {
+            if (currentSong) {
+                MIDI.Player.setTempo(parseFloat(val));
+                document.getElementById('status').innerHTML = `⚡ Speed set to ${val}x`;
+            }
+        }
+        
+        // Initialize MIDI.js
+        MIDI.loadPlugin({
+            soundfontUrl: "https://cdn.jsdelivr.net/gh/gleitz/midi-js-soundfonts@master/FluidR3_GM/",
+            instrument: "acoustic_grand_piano",
+            callback: function() {
+                createPiano();
+                document.getElementById('status').innerHTML = '✅ Ready! Use octave buttons (⬇️/⬆️) to access full range. Load a MIDI file to see keys light up.';
+            }
+        });
+        
+        document.getElementById('midi-file').addEventListener('change', (e) => {
+            if (e.target.files[0]) loadMidiFile(e.target.files[0]);
+        });
+        
+        // Enable audio on first click
+        document.body.addEventListener('click', function enable() {
+            if (audioContext && audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+        });
+    </script>
+</body>
+</html>
+EOF
